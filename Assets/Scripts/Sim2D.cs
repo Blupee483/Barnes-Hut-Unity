@@ -1,6 +1,6 @@
 //inspired by Deadlock's video on n-body simulations https://www.youtube.com/watch?v=nZHjD3cI-EU
 //built in the unity engine
-//C# code created by me
+//C# code created by me.
 
 using System.Collections;
 using System.Collections.Generic;
