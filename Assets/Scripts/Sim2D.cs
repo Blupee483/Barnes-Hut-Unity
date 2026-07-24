@@ -22,7 +22,7 @@ public class Sim2D : MonoBehaviour
     public float initialMass = 1f;
     public float initialSpeed = 5f;
     [Header("Bounds Settings")]
-    public Vector2 bounds;
+    public float2 bounds;
     public float boundsDamping = 0.85f;
     [Header("Simulation Settings")]
     public bool bodyToBodyCollisions = true;
@@ -39,16 +39,16 @@ public class Sim2D : MonoBehaviour
 
     public struct Quad
     {
-        public Vector2 center;
+        public float2 center;
         public float size;
-        public uint FindQuadrant(Vector2 p) //assigns a number between [0, 3] based on what quadtrant of this quad p is in
+        public uint FindQuadrant(float2 p) //assigns a number between [0, 3] based on what quadtrant of this quad p is in
         {
             //***check node struct for specific quadrant numbers***
             int x = p.x > center.x ? 1 : 0;
             int y = p.y < center.y ? 1 : 0;
             return (uint)(x + y * 2);
         }
-        public bool CircleIntersectQuad(Vector2 circleCenter, float radius) //checks if the input circle intersects with this quad
+        public bool CircleIntersectQuad(float2 circleCenter, float radius) //checks if the input circle intersects with this quad
         {
             float halfSize = size * 0.5f;
             float closestX = Mathf.Clamp(circleCenter.x, center.x - halfSize, center.x + halfSize);
@@ -60,7 +60,7 @@ public class Sim2D : MonoBehaviour
             float sqrDistance = distanceX * distanceX + distanceY * distanceY;
             return sqrDistance < (radius * radius);
         }
-        public Quad(Vector2 center, float size)
+        public Quad(float2 center, float size)
         {
             this.center = center;
             this.size = size;
@@ -91,7 +91,7 @@ public class Sim2D : MonoBehaviour
         public int firstChild; //-1 if no children
         public Quad quad;
         public int bodyIndex; //-1 if no body
-        public Vector2 centerOfMass;
+        public float2 centerOfMass;
         public float mass;
 
         public void CreateChildren(QuadTree quadTree, out QuadTree newQuadTree)
@@ -108,7 +108,7 @@ public class Sim2D : MonoBehaviour
                 float signY = i < 2 ? 1 : -1;
 
                 //offset the child a quarter of the size
-                Vector2 offset = new Vector2(offsetDistance * signX, offsetDistance * signY);
+                float2 offset = new float2(offsetDistance * signX, offsetDistance * signY);
 
                 //create new child
                 Quad newQuad = new Quad(quad.center + offset, childHalfSize);
@@ -135,12 +135,12 @@ public class Sim2D : MonoBehaviour
         {
             float x = (i % bodiesPerRow - bodiesPerRow / 2f + 0.5f) * mySpacing;
             float y = (i / bodiesPerRow - bodiesPerColumn / 2f + 0.5f) * mySpacing;
-            Vector2 pos = new Vector2(x, y);
+            float2 pos = new float2(x, y);
 
             //add an orbital velocity relative to (0, 0) to each body
-            Vector2 orbitalVel = pos.normalized;
-            orbitalVel = new Vector2(-orbitalVel.y, orbitalVel.x);
-            Vector2 initVel = orbitalVel * initialSpeed;
+            float2 orbitalVel = pos / math.length(pos);
+            orbitalVel = new float2(-orbitalVel.y, orbitalVel.x);
+            float2 initVel = orbitalVel * initialSpeed;
 
             Body b = new Body(bodyMass, bodyRadius, pos, initVel);
             bodies[i] = b;
@@ -167,7 +167,7 @@ public class Sim2D : MonoBehaviour
         //quadTree = new QuadTree();
         quadTree.InitTree();
         Node topNode = new Node();
-        Quad topQuad = new Quad(Vector2.zero, Mathf.Max(bounds.x, bounds.y));
+        Quad topQuad = new Quad(float2.zero, Mathf.Max(bounds.x, bounds.y));
         topNode.SetQuad(topQuad);
         topNode.bodyIndex = -1;
         quadTree.Add(topNode);
@@ -277,7 +277,7 @@ public class Sim2D : MonoBehaviour
             Node node = quadTree.nodes[parentIndex];
 
             //calculate CoM based on this node's children
-            Vector2 totalCoM = Vector2.zero;
+            float2 totalCoM = float2.zero;
             float totalMass = 0;
             for(int j = 0; j < 4; j++)
             {
@@ -288,7 +288,7 @@ public class Sim2D : MonoBehaviour
                 totalCoM += child.centerOfMass * child.mass;
                 totalMass += child.mass;
             }
-            Vector2 centerOfMass = totalCoM / totalMass;
+            float2 centerOfMass = totalCoM / totalMass;
             node.mass = totalMass;
             node.centerOfMass = centerOfMass;
 
@@ -298,11 +298,11 @@ public class Sim2D : MonoBehaviour
     }
 
     List<int> stack = new List<int>(64); //using stack in acc calc and collision calc
-    Vector2 CalculateAcceleration(int myBodyIndex, float theta, float epsilon, QuadTree quadTree)
+    float2 CalculateAcceleration(int myBodyIndex, float theta, float epsilon, QuadTree quadTree)
     {
         Body b = bodies[myBodyIndex];
-        Vector2 bodyPos = b.position;
-        Vector2 acc = Vector2.zero;
+        float2 bodyPos = b.position;
+        float2 acc = float2.zero;
 
         float sqrTheta = theta * theta;
         float sqrEpsilon = epsilon * epsilon;
@@ -318,8 +318,8 @@ public class Sim2D : MonoBehaviour
 
             Node n = quadTree.nodes[nodeIndex];
 
-            Vector2 normal = n.centerOfMass - bodyPos;
-            float sqrDistance = normal.sqrMagnitude;
+            float2 normal = n.centerOfMass - bodyPos;
+            float sqrDistance = math.lengthsq(normal);
 
             //apply force to this body if leaf node or distance to node is sufficient
             if(!n.IsBranch() || n.quad.size * n.quad.size < sqrDistance * sqrTheta)
@@ -362,9 +362,16 @@ public class Sim2D : MonoBehaviour
 
             //update position and velocity
             b.velocity += b.acceleration * dt;
-            b.velocity = Vector2.ClampMagnitude(b.velocity, maxVelocity); //safety net for eratic velocity
+
+            float2 ClampMagnitude(float2 vec, float clampVal) //clamps a vector to a length
+            {
+                float2 normal = vec / math.length(vec);
+                return normal * Mathf.Clamp(math.length(vec), 0, clampVal);
+            }
+
+            b.velocity = ClampMagnitude(b.velocity, maxVelocity == 0 ? 1 : maxVelocity); //safety net for eratic velocity
             b.position += b.velocity * dt;
-            b.acceleration = Vector2.zero;
+            b.acceleration = float2.zero;
 
             //resolve border collision
             if(Mathf.Abs(b.position.x) > bounds.x / 2f - b.radius)
@@ -393,18 +400,18 @@ public class Sim2D : MonoBehaviour
                 Body bodyB = bodies[j];
 
                 //find the normal of the two bodies
-                Vector2 normal = bodyA.position - bodyB.position;
-                float sqrDist = normal.sqrMagnitude;
+                float2 normal = bodyA.position - bodyB.position;
+                float sqrDist = math.lengthsq(normal);
                 float combinedRadius = bodyA.radius + bodyB.radius;
 
 
 
                 //handles calculating gravitational forces
-                Vector2 uNormal = normal.normalized;
+                float2 uNormal = normal / math.length(normal);
 
-                Vector2 forceA = gravitationalConstant * bodyB.mass / Mathf.Max(sqrDist, minDist) * -uNormal;
+                float2 forceA = gravitationalConstant * bodyB.mass / Mathf.Max(sqrDist, minDist) * -uNormal;
                 bodyA.acceleration += forceA;
-                Vector2 forceB = gravitationalConstant * bodyA.mass / Mathf.Max(sqrDist, minDist) * uNormal;
+                float2 forceB = gravitationalConstant * bodyA.mass / Mathf.Max(sqrDist, minDist) * uNormal;
                 bodyB.acceleration += forceB;
 
 
@@ -417,7 +424,7 @@ public class Sim2D : MonoBehaviour
                     float dist = Mathf.Sqrt(sqrDist);
                     
                     //correct velocities
-                    Vector2 unitNormal = normal / dist;
+                    float2 unitNormal = normal / dist;
 
                     float scalarNormalA = unitNormal.x * bodyA.velocity.x + unitNormal.y * bodyA.velocity.y;
                     float scalarNormalB = unitNormal.x * bodyB.velocity.x + unitNormal.y * bodyB.velocity.y;
@@ -496,8 +503,8 @@ public class Sim2D : MonoBehaviour
                 Body otherBody = bodies[otherBodyIndex];
 
                 //find the normal of the two bodies
-                Vector2 normal = b.position - otherBody.position;
-                float sqrDistance = normal.sqrMagnitude;
+                float2 normal = b.position - otherBody.position;
+                float sqrDistance = math.lengthsq(normal);
                 float combinedRadius = b.radius + otherBody.radius;
 
                 if(sqrDistance <= combinedRadius * combinedRadius)
@@ -507,7 +514,7 @@ public class Sim2D : MonoBehaviour
                     if(dist == 0) continue; //safety for division by zero
                     
                     //correct velocities
-                    Vector2 unitNormal = normal / dist;
+                    float2 unitNormal = normal / dist;
 
                     float scalarNormalA = unitNormal.x * b.velocity.x + unitNormal.y * b.velocity.y;
                     float scalarNormalB = unitNormal.x * otherBody.velocity.x + unitNormal.y * otherBody.velocity.y;
@@ -552,7 +559,7 @@ public class Sim2D : MonoBehaviour
         for(int i = 0; i < bodies.Length; i++)
         {
             float epsilon = 1;
-            Vector2 acc = CalculateAcceleration(i, accuracyTheta, epsilon, quadTree);
+            float2 acc = CalculateAcceleration(i, accuracyTheta, epsilon, quadTree);
             bodies[i].acceleration = acc;
         }
 
@@ -583,8 +590,12 @@ public class Sim2D : MonoBehaviour
         for(int i = 0; i < quadTree.nodes.Count; i++)
         {
             Node node = quadTree.nodes[i];
-            Gizmos.DrawWireCube(node.quad.center, new Vector3(node.quad.size, node.quad.size, 1f));
-            Gizmos.DrawWireSphere(node.centerOfMass, 0.1f);
+
+            Vector2 nodeCenter = new Vector2(node.quad.center.x, node.quad.center.y);
+            Gizmos.DrawWireCube(nodeCenter, new Vector3(node.quad.size, node.quad.size, 1f));
+
+            Vector2 nodeCoM = new Vector2(node.centerOfMass.x, node.centerOfMass.y);
+            Gizmos.DrawWireSphere(nodeCoM, 0.1f);
         }
     }
 }
@@ -594,16 +605,16 @@ public struct Body //body contains a mass, a radius, a position, a velocity, and
 {
     public float mass;
     public float radius;
-    public Vector2 position;
-    public Vector2 velocity;
-    public Vector2 acceleration;
-    public Body(float m, float rad, Vector2 pos, Vector2 vel)
+    public float2 position;
+    public float2 velocity;
+    public float2 acceleration;
+    public Body(float m, float rad, float2 pos, float2 vel)
     {
         mass = m;
         radius = rad;
         position = pos;
         velocity = vel;
-        acceleration = Vector2.zero;
+        acceleration = float2.zero;
     }
 }
 

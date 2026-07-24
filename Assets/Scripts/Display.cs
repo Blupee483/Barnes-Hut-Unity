@@ -35,7 +35,9 @@ public class Display : MonoBehaviour
         for(int i = 0; i < numBodies; i++)
         {
             scale = new Vector3(bodies[i].radius*2, bodies[i].radius*2, 1f);
-            matrices[i].SetTRS(bodies[i].position, identityRot, scale);
+
+            Vector3 bodyPos = new Vector3(bodies[i].position.x, bodies[i].position.y);
+            matrices[i].SetTRS(bodyPos, identityRot, scale);
         }
 
         //render using unity's api in batches of 1023
