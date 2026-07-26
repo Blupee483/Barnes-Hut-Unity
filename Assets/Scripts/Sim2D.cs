@@ -40,7 +40,6 @@ public class Sim2D : MonoBehaviour
     public float maxVelocity = 25f;
     [Range(1, 10)] public int subSteps = 4;
     [Range(1, 10)] public int dtReduction = 2;
-    public QuadTree quadTree;
 
     void Awake()
     {
@@ -95,20 +94,6 @@ public class Sim2D : MonoBehaviour
         }
     }
 
-    public struct QuadTree
-    {
-        public List<Node> nodes;
-        public List<int> parents;
-        public void InitTree() 
-        {
-            if(nodes == null) nodes = new List<Node>(4096);
-            else nodes.Clear();
-            if(parents == null) parents = new List<int>(1024);
-            else parents.Clear();
-        }
-        public void Add(Node node) {nodes.Add(node);}
-    }
-
     public struct Node
     {
         /*child quadrants:
@@ -121,32 +106,6 @@ public class Sim2D : MonoBehaviour
         public int bodyIndex; //-1 if no body
         public float2 centerOfMass;
         public float mass;
-
-        public void CreateChildren(QuadTree quadTree, out QuadTree newQuadTree)
-        {
-            firstChild = quadTree.nodes.Count;
-            //children = new uint[4];
-            float childHalfSize = quad.size/2;
-
-            float offsetDistance = quad.size/4;
-            for (int i = 0; i < 4; i++)
-            {
-                //assigns child to a quad number
-                float signX = i % 2 == 0 ? -1 : 1;
-                float signY = i < 2 ? 1 : -1;
-
-                //offset the child a quarter of the size
-                float2 offset = new float2(offsetDistance * signX, offsetDistance * signY);
-
-                //create new child
-                Quad newQuad = new Quad(quad.center + offset, childHalfSize);
-                Node newNode = new Node{quad = newQuad, firstChild = -1, bodyIndex = -1};
-                quadTree.Add(newNode);
-            }
-
-            newQuadTree = quadTree;
-        }
-        public void SetQuad(Quad val) {quad = val;}
         public bool IsBranch() => firstChild >= 0;
     }
 
@@ -174,125 +133,6 @@ public class Sim2D : MonoBehaviour
             bodies[i] = b;
         }
         return bodies;
-    }
-
-    void Startxx()
-    {
-        bodies = InitBodies(numBodies, spacing, initialRadius, initialMass, initialSpeed);
-        quadTree.InitTree();
-
-        for(int prePass = 0; prePass < 10; prePass++)
-        {
-            ConstructQuadTree(bodies, ref quadTree);
-            HandleCollisions(quadTree, ref bodies);
-        }
-    }
-
-
-
-
-// ------------- construct quadtree functions (both normal and ijob) ------------------------
-    void ConstructQuadTree(Body[] bodies, ref QuadTree quadTree) //construct quadtree as a normal function
-    {
-        //initialize the top node and the tree
-        //quadTree = new QuadTree();
-        quadTree.InitTree();
-        Node topNode = new Node();
-        Quad topQuad = new Quad(float2.zero, Mathf.Max(bounds.x, bounds.y));
-        topNode.SetQuad(topQuad);
-        topNode.bodyIndex = -1;
-        quadTree.Add(topNode);
-
-        topNode.CreateChildren(quadTree, out quadTree);
-        quadTree.nodes[0] = topNode;
-        
-        //loops over all the bodies
-        int bodyIndex = 0;
-        foreach(Body b in bodies)
-        {
-            Node myNode = topNode;
-            int nodeIndex = 0;
-            //loops until b finds a leaf node
-            while (myNode.IsBranch())
-            {
-                uint childNum = myNode.quad.FindQuadrant(b.position);
-                nodeIndex = myNode.firstChild + (int)childNum;
-                myNode = quadTree.nodes[nodeIndex];
-            }
-
-            //checks if this leaf node has a body
-            if(myNode.bodyIndex > -1)
-            {
-                Body otherB = bodies[myNode.bodyIndex];
-                int otherBodyIndex = myNode.bodyIndex;
-                uint myBQuad, otherBQuad;
-                int myIndex, otherIndex;
-
-                myNode.bodyIndex = -1;
-                myNode.mass += b.mass;
-                quadTree.nodes[nodeIndex] = myNode;
-
-                uint debugCount = 0;
-                int currentParentIndex = nodeIndex;
-                Node currentParentNode = myNode;
-                //loop until the two bodies are in different quads
-                while (true)
-                {
-                    //divides the quadtree further
-                    currentParentNode.CreateChildren(quadTree, out quadTree);
-                    quadTree.nodes[currentParentIndex] = currentParentNode;
-                    quadTree.parents.Add(currentParentIndex);
-
-                    //finds and checks the quadrants of the two bodies after division
-                    myBQuad = currentParentNode.quad.FindQuadrant(b.position);
-                    otherBQuad = currentParentNode.quad.FindQuadrant(otherB.position);
-
-                    myIndex = currentParentNode.firstChild + (int)myBQuad;
-                    otherIndex = currentParentNode.firstChild + (int)otherBQuad;
-                    //if the two bodies are in different quadrants, break this loop
-                    if(myBQuad != otherBQuad) 
-                    {
-                        break;
-                    }
-
-                    //if not, set the current node
-                    currentParentIndex = myIndex;
-                    currentParentNode = quadTree.nodes[currentParentIndex];
-
-                    //stops this loop if it exceeds 100 counts
-                    debugCount ++;
-                    if(debugCount > 100)
-                    {
-                        Debug.LogError("A tree construction attempted 100 divisions! Were 2 bodies too close?");
-                        break;
-                    }
-                }
-
-                //update the nodes within the quadtree struct
-                Node finalMyNode = quadTree.nodes[myIndex];
-                finalMyNode.bodyIndex = bodyIndex;
-                finalMyNode.centerOfMass = b.position;
-                finalMyNode.mass = b.mass;
-
-                Node finalOtherNode = quadTree.nodes[otherIndex];
-                finalOtherNode.bodyIndex = otherBodyIndex;
-                finalOtherNode.centerOfMass = otherB.position;
-                finalOtherNode.mass = otherB.mass;
-
-                quadTree.nodes[myIndex] = finalMyNode;
-                quadTree.nodes[otherIndex] = finalOtherNode;
-            }
-            else
-            {
-                //update the node within the quadtree struct
-                myNode.bodyIndex = bodyIndex;
-                myNode.centerOfMass = b.position;
-                myNode.mass = b.mass;
-                quadTree.nodes[nodeIndex] = myNode;
-            }
-
-            bodyIndex ++;
-        }
     }
 
     [BurstCompile]
@@ -433,48 +273,6 @@ public class Sim2D : MonoBehaviour
         }
     }
 
-
-
-
-
-
-
-
-
-
-
-
-    //calculates the center of mass of every node after construction
-    QuadTree CalculateCentersOfMass(QuadTree quadTree) //normal CoM calculations function
-    {
-        //loops through the tree in reverse
-        //excludes all leaf nodes
-        for(int i = quadTree.parents.Count - 1; i >= 0; i--)
-        {
-            int parentIndex = quadTree.parents[i];
-            Node node = quadTree.nodes[parentIndex];
-
-            //calculate CoM based on this node's children
-            float2 totalCoM = float2.zero;
-            float totalMass = 0;
-            for(int j = 0; j < 4; j++)
-            {
-                Node child = quadTree.nodes[node.firstChild + j];
-
-                if(child.mass <= 0) continue;
-
-                totalCoM += child.centerOfMass * child.mass;
-                totalMass += child.mass;
-            }
-            float2 centerOfMass = totalCoM / totalMass;
-            node.mass = totalMass;
-            node.centerOfMass = centerOfMass;
-
-            quadTree.nodes[parentIndex] = node;
-        }
-        return quadTree;
-    }
-
     [BurstCompile]
     public struct CalculateCentersOfMassJob : IJob //calculate CoM job function
     {
@@ -509,68 +307,6 @@ public class Sim2D : MonoBehaviour
                 nodes[parentIndex] = node;
             }
         }
-    }
-
-
-
-
-
-
-
-
-
-
-
-    List<int> stack = new List<int>(64); //using stack in acc calc and collision calc
-    float2 CalculateAcceleration(int myBodyIndex, float theta, float epsilon, QuadTree quadTree)
-    {
-        Body b = bodies[myBodyIndex];
-        float2 bodyPos = b.position;
-        float2 acc = float2.zero;
-
-        float sqrTheta = theta * theta;
-        float sqrEpsilon = epsilon * epsilon;
-
-        stack.Clear();
-        stack.Add(0);
-
-        //traverse the tree to make distance comparisons to each node
-        while(stack.Count > 0)
-        {
-            int nodeIndex = stack[^1];
-            stack.RemoveAt(stack.Count - 1);
-
-            Node n = quadTree.nodes[nodeIndex];
-
-            float2 normal = n.centerOfMass - bodyPos;
-            float sqrDistance = math.lengthsq(normal);
-
-            //apply force to this body if leaf node or distance to node is sufficient
-            if(!n.IsBranch() || n.quad.size * n.quad.size < sqrDistance * sqrTheta)
-            {
-                //calc acc influence
-                float dist = Mathf.Sqrt(sqrDistance);
-                float denom = sqrDistance + sqrEpsilon * dist;
-
-                //prevent division by zero
-                if(denom == 0.0f)
-                {
-                    //Debug.LogWarning("Division by zero attempted!");
-                    denom = float.MaxValue;
-                }
-                denom = Mathf.Min(denom, float.MaxValue);
-
-                acc += normal * (n.mass / denom) * gravitationalConstant;
-                continue;
-            }
-
-            for(int i = 3; i >= 0; i--) //add children to the stack
-            {
-                stack.Add(n.firstChild + i);
-            }
-        }
-
-        return acc;
     }
 
     [BurstCompile]
@@ -644,47 +380,6 @@ public class Sim2D : MonoBehaviour
 
 
     //----------- \ update positions / --------------
-    void UpdateAllBodiesPos(float dt)
-    {
-        if(bounds.x <= initialRadius*2 || bounds.y <= initialRadius * 2)
-        {
-            Debug.Log("Bounds is too small!");
-            return;
-        }
-
-        for(int i = 0; i < bodies.Length; i++)
-        {
-            Body b = bodies[i];
-
-            //update position and velocity
-            b.velocity += b.acceleration * dt;
-
-            float2 ClampMagnitude(float2 vec, float clampVal) //clamps a vector to a length
-            {
-                float2 normal = vec / math.length(vec);
-                return normal * math.clamp(math.length(vec), 0, clampVal);
-            }
-
-            b.velocity = ClampMagnitude(b.velocity, maxVelocity == 0 ? 1 : maxVelocity); //safety net for eratic velocity
-            b.position += b.velocity * dt;
-            b.acceleration = float2.zero;
-
-            //resolve border collision
-            if(Mathf.Abs(b.position.x) > bounds.x / 2f - b.radius)
-            {
-                b.position.x = (bounds.x / 2f - b.radius) * Mathf.Sign(b.position.x);
-                b.velocity.x *= -boundsDamping;
-            }
-            if(Mathf.Abs(b.position.y) > bounds.y / 2f - b.radius)
-            {
-                b.position.y = (bounds.y / 2f - b.radius) * Mathf.Sign(b.position.y);
-                b.velocity.y *= -boundsDamping;
-            }
-
-            //update the main array
-            bodies[i] = b;
-        }
-    }
 
     [BurstCompile]
     public struct UpdatePositionsJob : IJobParallelFor
@@ -796,99 +491,6 @@ public class Sim2D : MonoBehaviour
                 }
             }
             bodies[i] = bodyA;
-        }
-    }
-
-    List<int> potentialCollisionIndices = new List<int>(128);
-    void HandleCollisions(QuadTree quadTree, ref Body[] bodies) //normal collision handling function
-    {
-        if(!bodyToBodyCollisions) return;
-
-        const float correctionPercent = 0.5f;
-
-        for(int i = 0; i < bodies.Length; i++)
-        {
-            Body b = bodies[i];
-            potentialCollisionIndices.Clear();
-            stack.Clear();
-            stack.Add(0);
-
-            //traverse the tree and see which nodes the body intersects with
-            while(stack.Count > 0)
-            {
-                //find the node we want to check
-                int nodeIndex = stack[^1];
-                stack.RemoveAt(stack.Count - 1);
-                Node parent = quadTree.nodes[nodeIndex];
-
-                //add to potential collisions if this node has a body and is a leaf
-                if(!parent.IsBranch() && parent.bodyIndex > -1 && parent.bodyIndex != i) 
-                {
-                    potentialCollisionIndices.Add(parent.bodyIndex);
-                    continue;
-                }
-                if(!parent.IsBranch()) continue;
-
-                //check each child
-                //Debug.Log(parent.children[0]);
-                for(int j = 0; j < 4; j++)
-                {
-                    int childIndex = parent.firstChild + j;
-                    Node child = quadTree.nodes[childIndex];
-
-                    //if the body isn't intersecting this child quad, ignore the child
-                    if(!child.quad.CircleIntersectQuad(b.position, b.radius))
-                    {
-                        continue;
-                    }
-
-                    //add child to stack
-                    stack.Add(childIndex);
-                }
-            }
-
-            //loops through potential collisions to check/solve for them
-            foreach(int index in potentialCollisionIndices)
-            {
-                int otherBodyIndex = index;
-                Body otherBody = bodies[otherBodyIndex];
-
-                //find the normal of the two bodies
-                float2 normal = b.position - otherBody.position;
-                float sqrDistance = math.lengthsq(normal);
-                float combinedRadius = b.radius + otherBody.radius;
-
-                if(sqrDistance <= combinedRadius * combinedRadius)
-                {
-                    //solve the collision
-                    float dist = Mathf.Sqrt(sqrDistance);
-                    if(dist == 0) continue; //safety for division by zero
-                    
-                    //correct velocities
-                    float2 unitNormal = normal / dist;
-
-                    float scalarNormalA = unitNormal.x * b.velocity.x + unitNormal.y * b.velocity.y;
-                    float scalarNormalB = unitNormal.x * otherBody.velocity.x + unitNormal.y * otherBody.velocity.y;
-
-                    float scalarNormalAPrime = (scalarNormalA * (b.mass - otherBody.mass) + 2 * otherBody.mass * scalarNormalB) / (b.mass + otherBody.mass);
-                    float scalarNormalBPrime = (scalarNormalB * (otherBody.mass - b.mass) + 2 * b.mass * scalarNormalA) / (b.mass + otherBody.mass);
-
-                    b.velocity += (scalarNormalAPrime - scalarNormalA) * unitNormal * collisionDamping;
-                    otherBody.velocity += (scalarNormalBPrime - scalarNormalB) * unitNormal * collisionDamping;
-
-                    //correct positions
-                    float depth = combinedRadius - dist;
-
-                    float totalMass = b.mass + otherBody.mass;
-                    b.position += unitNormal * depth * otherBody.mass / totalMass * correctionPercent;
-                    otherBody.position -= unitNormal * depth * b.mass / totalMass * correctionPercent;
-
-                    //update other body immediately
-                    bodies[otherBodyIndex] = otherBody;
-                }
-            }
-
-            bodies[i] = b;
         }
     }
 
@@ -1005,49 +607,6 @@ public class Sim2D : MonoBehaviour
 
 
     bool paused = false;
-
-    //---------------- \ OLD UPDATE FUNCTION / -----------------------
-    void Updatexx()
-    {
-        //pause the main loop if p is pressed
-        if(Input.GetKeyDown(KeyCode.P)) paused = paused ? false : true;
-        if(paused) return;
-
-        //HandleCollisionsAndForcesBruteForce(); //OLD CODE
-        //build a new quadtree
-        ConstructQuadTree(bodies, ref quadTree);
-
-        //calc the center of masses for each node
-        quadTree = CalculateCentersOfMass(quadTree);
-
-        //applies acceleration onto each body
-        for(int i = 0; i < bodies.Length; i++)
-        {
-            float epsilon = 1;
-            float2 acc = CalculateAcceleration(i, accuracyTheta, epsilon, quadTree);
-            bodies[i].acceleration = acc;
-        }
-
-        //divides deltaTime into steps
-        int steps = Mathf.Max(1, subSteps);
-        float subDt = Time.deltaTime / (float)steps;
-        subDt /= dtReduction;
-
-        for(int step = 0; step < steps; step++) //check collisions in set steps
-        {
-            //handle collisions
-            const int collisionIterations = 2;
-            for(int i = 0; i < collisionIterations; i++)
-            {
-                HandleCollisions(quadTree, ref bodies);
-            }
-
-            //updates the bodies' positions
-            UpdateAllBodiesPos(subDt);
-        }
-    }
-
-
     //------------------- \ NEW UPDATE FUNCTION / ----------------------------
     void Update()
     {
@@ -1115,17 +674,6 @@ public class Sim2D : MonoBehaviour
 
         nativeBodies.CopyTo(bodies);
     }
-
-
-
-
-
-
-
-
-
-
-
 
     void OnDrawGizmos() //gizmos visualization of the quadtree
     {
