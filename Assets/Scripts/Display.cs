@@ -36,7 +36,14 @@ public class Display : MonoBehaviour
         {
             scale = new Vector3(bodies[i].radius*2, bodies[i].radius*2, 1f);
 
-            Vector3 bodyPos = new Vector3(bodies[i].position.x, bodies[i].position.y);
+            float x = bodies[i].position.x;
+            if(!float.IsFinite(x)) x = 0f; //inifinity/NaN safety check
+
+            float y = bodies[i].position.y;
+            if(!float.IsFinite(y)) y = 0f; //infinity/NaN safety check
+
+            Vector3 bodyPos = new Vector3(x, y);
+
             matrices[i].SetTRS(bodyPos, identityRot, scale);
         }
 

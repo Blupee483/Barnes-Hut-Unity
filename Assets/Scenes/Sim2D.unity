@@ -307,7 +307,9 @@ MonoBehaviour:
   initialRadius: 0.3
   initialMass: 1
   initialSpeed: 5
-  bounds: {x: 110, y: 105}
+  bounds:
+    x: 200
+    y: 190
   boundsDamping: 0.85
   bodyToBodyCollisions: 1
   showGizmos: 0

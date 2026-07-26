@@ -14,6 +14,11 @@ using Unity.Collections;
 
 public class Sim2D : MonoBehaviour
 {
+    NativeArray<Body> nativeBodies;
+    NativeList<Node> quadTreeNodes;
+    NativeList<int> quadTreeParents;
+    NativeArray<float2> accelerations;
+
     public Body[] bodies;
     [Header("Initialization Settings")]
     public uint numBodies = 1000;
@@ -37,6 +42,29 @@ public class Sim2D : MonoBehaviour
     [Range(1, 10)] public int dtReduction = 2;
     public QuadTree quadTree;
 
+    void Awake()
+    {
+        nativeBodies = new NativeArray<Body>((int)numBodies, Allocator.Persistent);
+        bodies = InitBodies(numBodies, spacing, initialRadius, initialMass, initialSpeed);
+        HandleCollisionsAndForcesBruteForce(); //prehandle any overlapping bodies
+        nativeBodies.CopyFrom(bodies);
+
+        quadTreeNodes = new NativeList<Node>(4096, Allocator.Persistent);
+        quadTreeParents = new NativeList<int>(1024, Allocator.Persistent);
+        accelerations = new NativeArray<float2>((int)numBodies, Allocator.Persistent);
+    }
+    void OnDestroy()
+    {
+        //if(nativeBodies.IsCreated) 
+        nativeBodies.Dispose();
+        //if(quadTreeNodes.IsCreated) 
+        quadTreeNodes.Dispose();
+        //if(quadTreeParents.IsCreated) 
+        quadTreeParents.Dispose();
+        //if(accelerations.IsCreated) 
+        accelerations.Dispose();
+    }
+
     public struct Quad
     {
         public float2 center;
@@ -51,8 +79,8 @@ public class Sim2D : MonoBehaviour
         public bool CircleIntersectQuad(float2 circleCenter, float radius) //checks if the input circle intersects with this quad
         {
             float halfSize = size * 0.5f;
-            float closestX = Mathf.Clamp(circleCenter.x, center.x - halfSize, center.x + halfSize);
-            float closestY = Mathf.Clamp(circleCenter.y, center.y - halfSize, center.y + halfSize);
+            float closestX = math.clamp(circleCenter.x, center.x - halfSize, center.x + halfSize);
+            float closestY = math.clamp(circleCenter.y, center.y - halfSize, center.y + halfSize);
 
             float distanceX = circleCenter.x - closestX;
             float distanceY = circleCenter.y - closestY;
@@ -148,7 +176,7 @@ public class Sim2D : MonoBehaviour
         return bodies;
     }
 
-    void Start()
+    void Startxx()
     {
         bodies = InitBodies(numBodies, spacing, initialRadius, initialMass, initialSpeed);
         quadTree.InitTree();
@@ -160,8 +188,11 @@ public class Sim2D : MonoBehaviour
         }
     }
 
-    //constructs quadtree from body positions
-    void ConstructQuadTree(Body[] bodies, ref QuadTree quadTree)
+
+
+
+// ------------- construct quadtree functions (both normal and ijob) ------------------------
+    void ConstructQuadTree(Body[] bodies, ref QuadTree quadTree) //construct quadtree as a normal function
     {
         //initialize the top node and the tree
         //quadTree = new QuadTree();
@@ -262,12 +293,159 @@ public class Sim2D : MonoBehaviour
 
             bodyIndex ++;
         }
-
-        //return quadTree;
     }
 
+    [BurstCompile]
+    public struct ConstructQuadTreeJob : IJob //construct quadtree as an ijob
+    {
+        [ReadOnly] public NativeArray<Body> bodies;
+        public NativeList<Node> nodes;
+        public NativeList<int> parents;
+        public Quad topQuad;
+
+        public void Execute()
+        {
+            nodes.Clear();
+            parents.Clear();
+
+            Node topNode = new Node() {quad = topQuad, firstChild = -1, bodyIndex = -1};
+            nodes.Add(topNode);
+            CreateChildren(0);
+
+            for(int bodyIndex = 0; bodyIndex < bodies.Length; bodyIndex++)
+            {
+                Body b = bodies[bodyIndex];
+                int nodeIndex = 0;
+
+                //loops until b finds a leaf node
+                while (nodes[nodeIndex].IsBranch())
+                {
+                    Node n = nodes[nodeIndex];
+                    uint childNum = n.quad.FindQuadrant(b.position);
+                    nodeIndex = n.firstChild + (int)childNum; 
+                }
+
+                //checks if this leaf node has a body
+                Node leaf = nodes[nodeIndex];
+                if(leaf.bodyIndex > -1)
+                {
+                    Body otherB = bodies[leaf.bodyIndex];
+                    int otherBodyIndex = leaf.bodyIndex;
+
+                    uint myBQuad, otherBQuad;
+                    int myIndex, otherIndex;
+                    int myFinalIndex = -1, otherFinalIndex = -1;
+
+                    leaf.bodyIndex = -1;
+                    leaf.mass += b.mass;
+                    nodes[nodeIndex] = leaf;
+
+                    int safety = 0; //counts quadtree branching
+                    
+                    int currentParentIndex = nodeIndex;
+                    Node currentParentNode = leaf;
+                    //loop until the two bodies are in different quads
+                    while (true)
+                    {
+                        //divides the quadtree further
+                        CreateChildren(currentParentIndex);
+                        currentParentNode = nodes[currentParentIndex];
+                        parents.Add(currentParentIndex);
+
+                        //finds and checks the quadrants of the two bodies after division
+                        myBQuad = currentParentNode.quad.FindQuadrant(b.position);
+                        otherBQuad = currentParentNode.quad.FindQuadrant(otherB.position);
+
+                        myIndex = currentParentNode.firstChild + (int)myBQuad;
+                        otherIndex = currentParentNode.firstChild + (int)otherBQuad;
+
+                        //if the two bodies are in different quadrants, break this loop
+                        if(myBQuad != otherBQuad) 
+                        {
+                            myFinalIndex = myIndex;
+                            otherFinalIndex = otherIndex;
+                            break;
+                        }
+
+                        //if not, set the current node
+                        currentParentIndex = myIndex;
+                        currentParentNode = nodes[currentParentIndex];
+
+                        //stops this loop if it exceeds 100 counts
+                        safety ++;
+                        if(safety > 100)
+                        {
+                            Debug.LogError("A tree construction attempted 100 divisions! Were 2 bodies too close?");
+                            myFinalIndex = myIndex;
+                            otherFinalIndex = otherIndex;
+                            break;
+                        }
+                    }
+
+                    //update the nodes within the quadtree struct
+                    Node finalLeaf = nodes[myFinalIndex];
+                    finalLeaf.bodyIndex = bodyIndex;
+                    finalLeaf.centerOfMass = b.position;
+                    finalLeaf.mass = b.mass;
+                    nodes[myFinalIndex] = finalLeaf;
+
+                    Node finalOtherNode = nodes[otherFinalIndex];
+                    finalOtherNode.bodyIndex = otherBodyIndex;
+                    finalOtherNode.centerOfMass = otherB.position;
+                    finalOtherNode.mass = otherB.mass;
+                    nodes[otherFinalIndex] = finalOtherNode;
+                }
+                else
+                {
+                    //update the node within the quadtree struct
+                    leaf.bodyIndex = bodyIndex;
+                    leaf.centerOfMass = b.position;
+                    leaf.mass = b.mass;
+                    nodes[nodeIndex] = leaf;
+                }
+            }
+        }
+
+        void CreateChildren(int parentIndex)
+        {
+            Node parent = nodes[parentIndex];
+            int firstChild = nodes.Length;
+            parent.firstChild = firstChild;
+            nodes[parentIndex] = parent;
+
+            float childHalfSize = parent.quad.size/2f;
+            float offsetDistance = parent.quad.size/4f;
+
+            for (int i = 0; i < 4; i++)
+            {
+                //assigns child to a quad number
+                float signX = i % 2 == 0 ? -1 : 1;
+                float signY = i < 2 ? 1 : -1;
+
+                //offset the child a quarter of the size
+                float2 offset = new float2(offsetDistance * signX, offsetDistance * signY);
+
+                //create new child
+                Quad newQuad = new Quad(parent.quad.center + offset, childHalfSize);
+                Node newNode = new Node{quad = newQuad, firstChild = -1, bodyIndex = -1};
+                nodes.Add(newNode);
+            }
+        }
+    }
+
+
+
+
+
+
+
+
+
+
+
+
     //calculates the center of mass of every node after construction
-    QuadTree CalculateCentersOfMass(QuadTree quadTree)
+    QuadTree CalculateCentersOfMass(QuadTree quadTree) //normal CoM calculations function
     {
         //loops through the tree in reverse
         //excludes all leaf nodes
@@ -296,6 +474,52 @@ public class Sim2D : MonoBehaviour
         }
         return quadTree;
     }
+
+    [BurstCompile]
+    public struct CalculateCentersOfMassJob : IJob //calculate CoM job function
+    {
+        public NativeList<Node> nodes;
+        [ReadOnly] public NativeList<int> parents;
+
+        public void Execute()
+        {
+            //loops through the tree in reverse
+            //excludes all leaf nodes
+            for(int i = parents.Length - 1; i >= 0; i--)
+            {
+                int parentIndex = parents[i];
+                Node node = nodes[parentIndex];
+
+                //calculate CoM based on this node's children
+                float2 totalCoM = float2.zero;
+                float totalMass = 0;
+                for(int j = 0; j < 4; j++)
+                {
+                    Node child = nodes[node.firstChild + j];
+
+                    if(child.mass <= 0) continue;
+
+                    totalCoM += child.centerOfMass * child.mass;
+                    totalMass += child.mass;
+                }
+                float2 centerOfMass = totalCoM / totalMass;
+                node.mass = totalMass;
+                node.centerOfMass = totalMass > 0 ? centerOfMass : node.centerOfMass;
+
+                nodes[parentIndex] = node;
+            }
+        }
+    }
+
+
+
+
+
+
+
+
+
+
 
     List<int> stack = new List<int>(64); //using stack in acc calc and collision calc
     float2 CalculateAcceleration(int myBodyIndex, float theta, float epsilon, QuadTree quadTree)
@@ -348,6 +572,78 @@ public class Sim2D : MonoBehaviour
 
         return acc;
     }
+
+    [BurstCompile]
+    public struct CalculateAccelerationJob : IJobParallelFor //calc accelerations in parallel
+    {
+        [ReadOnly] public NativeArray<Body> bodies;
+        [ReadOnly] public NativeArray<Node> nodes;
+        public NativeArray<float2> accelerations;
+        public float theta;
+        public float epsilon;
+        public float gravitationalConstant;
+
+        const int stackCapacity = 128;
+
+        public void Execute(int index)
+        {
+            Body b = bodies[index];
+            float2 bodyPos = b.position;
+            float2 acc = float2.zero;
+
+            float sqrTheta = theta * theta;
+            float sqrEpsilon = epsilon * epsilon;
+
+            var stack = new NativeList<int>(stackCapacity, Allocator.Temp);
+            stack.Add(0);
+
+            while(stack.Length > 0)
+            {
+                int nodeIndex = stack[^1];
+                stack.RemoveAt(stack.Length - 1);
+
+                //stack.RemoveAt(stack.Count - 1);
+
+                Node n = nodes[nodeIndex];
+
+                float2 normal = n.centerOfMass - bodyPos;
+                float sqrDistance = math.lengthsq(normal);
+
+                //apply force to this body if leaf node or distance to node is sufficient
+                if(!n.IsBranch() || n.quad.size * n.quad.size < sqrDistance * sqrTheta)
+                {
+                    //calc acc influence
+                    float dist = math.sqrt(sqrDistance);
+                    float denom = sqrDistance + sqrEpsilon * dist;
+
+                    //prevent division by zero
+                    if(denom == 0.0f) denom = float.MaxValue;
+                    denom = Mathf.Min(denom, float.MaxValue);
+
+                    acc += normal * (n.mass / denom) * gravitationalConstant;
+                    continue;
+                }
+
+                for(int i = 3; i >= 0; i--) //add children to the stack
+                {
+                    stack.Add(n.firstChild + i);
+                }
+            }
+
+            accelerations[index] = acc;
+            stack.Dispose();
+        }
+    }
+
+
+
+
+
+
+
+
+
+    //----------- \ update positions / --------------
     void UpdateAllBodiesPos(float dt)
     {
         if(bounds.x <= initialRadius*2 || bounds.y <= initialRadius * 2)
@@ -366,7 +662,7 @@ public class Sim2D : MonoBehaviour
             float2 ClampMagnitude(float2 vec, float clampVal) //clamps a vector to a length
             {
                 float2 normal = vec / math.length(vec);
-                return normal * Mathf.Clamp(math.length(vec), 0, clampVal);
+                return normal * math.clamp(math.length(vec), 0, clampVal);
             }
 
             b.velocity = ClampMagnitude(b.velocity, maxVelocity == 0 ? 1 : maxVelocity); //safety net for eratic velocity
@@ -390,7 +686,62 @@ public class Sim2D : MonoBehaviour
         }
     }
 
-    void HandleCollisionsAndForcesBruteForce() //brute force collisions and gravity checks ---- VESTIGIAL CODE ----
+    [BurstCompile]
+    public struct UpdatePositionsJob : IJobParallelFor
+    {
+        public NativeArray<Body> bodies;
+        [ReadOnly] public NativeArray<float2> accelerations;
+        public float dt;
+        public float2 bounds;
+        public float boundsDamping;
+        public float maxVelocity;
+
+        public void Execute(int index)
+        {
+            Body b = bodies[index];
+            float2 acc = accelerations[index];
+
+            //update position and velocity
+            b.velocity += acc * dt;
+
+            float2 ClampMagnitude(float2 vec, float max) //clamps a vector to a length
+            {
+                float2 normal = vec / math.length(vec);
+                return normal * math.clamp(math.length(vec), 0, max);
+            }
+
+            b.velocity = ClampMagnitude(b.velocity, maxVelocity == 0 ? 1 : maxVelocity); //safety net for eratic velocity
+            b.position += b.velocity * dt;
+            b.acceleration = float2.zero;
+
+            //resolve border collision
+            if(Mathf.Abs(b.position.x) > bounds.x / 2f - b.radius)
+            {
+                b.position.x = (bounds.x / 2f - b.radius) * Mathf.Sign(b.position.x);
+                b.velocity.x *= -boundsDamping;
+            }
+            if(Mathf.Abs(b.position.y) > bounds.y / 2f - b.radius)
+            {
+                b.position.y = (bounds.y / 2f - b.radius) * Mathf.Sign(b.position.y);
+                b.velocity.y *= -boundsDamping;
+            }
+
+            //update the main array
+            bodies[index] = b;
+        }
+    }
+
+
+
+
+
+
+
+
+
+    //----------------\ collision handlers /--------------------
+
+    void HandleCollisionsAndForcesBruteForce() //brute force collisions and gravity checks
     {
         for(int i = 0; i < bodies.Length; i++)
         {
@@ -449,7 +800,7 @@ public class Sim2D : MonoBehaviour
     }
 
     List<int> potentialCollisionIndices = new List<int>(128);
-    void HandleCollisions(QuadTree quadTree, ref Body[] bodies)
+    void HandleCollisions(QuadTree quadTree, ref Body[] bodies) //normal collision handling function
     {
         if(!bodyToBodyCollisions) return;
 
@@ -541,8 +892,122 @@ public class Sim2D : MonoBehaviour
         }
     }
 
+    [BurstCompile]
+    public struct HandleCollisionsJob : IJob
+    {
+        public NativeArray<Body> bodies;
+        [ReadOnly] public NativeArray<Node> nodes;
+        public float collisionDamping;
+        const float correctionPercent = 0.5f;
+        const int stackCapacity = 128;
+        const int potentialCapacity = 256;
+
+        public void Execute()
+        {
+            var stack = new NativeList<int>(stackCapacity, Allocator.Temp);
+            var potential = new NativeList<int>(potentialCapacity, Allocator.Temp);
+
+            for(int i = 0; i < bodies.Length; i++)
+            {
+                Body b = bodies[i];
+                stack.Clear();
+                potential.Clear();
+                stack.Add(0);
+
+                //traverse the tree and see which nodes the body intersects with
+                while(stack.Length > 0)
+                {
+                    //find the node we want to check
+                    int nodeIndex = stack[^1];
+                    stack.RemoveAt(stack.Length - 1);
+                    Node parent = nodes[nodeIndex];
+
+                    //add to potential collisions if this node has a body and is a leaf
+                    if(!parent.IsBranch()) 
+                    {
+                        if(parent.bodyIndex > -1 && parent.bodyIndex != i) 
+                            potential.Add(parent.bodyIndex);
+                        continue;
+                    }
+
+                    //check each child
+                    for(int j = 0; j < 4; j++)
+                    {
+                        int childIndex = parent.firstChild + j;
+                        Node child = nodes[childIndex];
+
+                        //if the body isn't intersecting this child quad, ignore the child
+                        if(!child.quad.CircleIntersectQuad(b.position, b.radius)) continue;
+
+                        //add child to stack
+                        stack.Add(childIndex);
+                    }
+                }
+
+                //loops through potential collisions to check/solve for them
+                for(int k = 0; k < potential.Length; k++)
+                {
+                    int otherBodyIndex = potential[k];
+                    Body otherBody = bodies[otherBodyIndex];
+
+                    //find the normal of the two bodies
+                    float2 normal = b.position - otherBody.position;
+                    float sqrDistance = math.lengthsq(normal);
+                    float combinedRadius = b.radius + otherBody.radius;
+
+                    if(sqrDistance <= combinedRadius * combinedRadius)
+                    {
+                        //solve the collision
+                        float dist = Mathf.Sqrt(sqrDistance);
+                        if(dist == 0) continue; //safety for division by zero
+                        
+                        //correct velocities
+                        float2 unitNormal = normal / dist;
+
+                        float scalarNormalA = unitNormal.x * b.velocity.x + unitNormal.y * b.velocity.y;
+                        float scalarNormalB = unitNormal.x * otherBody.velocity.x + unitNormal.y * otherBody.velocity.y;
+
+                        float scalarNormalAPrime = (scalarNormalA * (b.mass - otherBody.mass) + 2 * otherBody.mass * scalarNormalB) / (b.mass + otherBody.mass);
+                        float scalarNormalBPrime = (scalarNormalB * (otherBody.mass - b.mass) + 2 * b.mass * scalarNormalA) / (b.mass + otherBody.mass);
+
+                        b.velocity += (scalarNormalAPrime - scalarNormalA) * unitNormal * collisionDamping;
+                        otherBody.velocity += (scalarNormalBPrime - scalarNormalB) * unitNormal * collisionDamping;
+
+                        //correct positions
+                        float depth = combinedRadius - dist;
+
+                        float totalMass = b.mass + otherBody.mass;
+                        b.position += unitNormal * depth * otherBody.mass / totalMass * correctionPercent;
+                        otherBody.position -= unitNormal * depth * b.mass / totalMass * correctionPercent;
+
+                        //update other body immediately
+                        bodies[otherBodyIndex] = otherBody;
+                    }
+                }
+
+                bodies[i] = b;
+            }
+
+            stack.Dispose();
+            potential.Dispose();
+        }
+    }
+
+
+
+
+
+
+
+
+
+
+
+
     bool paused = false;
-    void Update()
+
+    //---------------- \ OLD UPDATE FUNCTION / -----------------------
+    void Updatexx()
     {
         //pause the main loop if p is pressed
         if(Input.GetKeyDown(KeyCode.P)) paused = paused ? false : true;
@@ -582,14 +1047,94 @@ public class Sim2D : MonoBehaviour
         }
     }
 
+
+    //------------------- \ NEW UPDATE FUNCTION / ----------------------------
+    void Update()
+    {
+        if(Input.GetKeyDown(KeyCode.P)) paused = !paused;
+        if(paused) return;
+
+        Quad topQuad = new Quad(float2.zero, Mathf.Max(bounds.x, bounds.y));
+
+        var treeJob = new ConstructQuadTreeJob
+        {
+            bodies = nativeBodies,
+            nodes = quadTreeNodes,
+            parents = quadTreeParents,
+            topQuad = topQuad
+        };
+        JobHandle treeHandle = treeJob.Schedule();
+
+        var comCalcJob = new CalculateCentersOfMassJob
+        {
+            nodes = quadTreeNodes,
+            parents = quadTreeParents
+        };
+        JobHandle comHandle = comCalcJob.Schedule(treeHandle);
+
+        var gravityJob = new CalculateAccelerationJob
+        {
+            bodies = nativeBodies,
+            nodes = quadTreeNodes.AsDeferredJobArray(),
+            accelerations = accelerations,
+            theta = accuracyTheta,
+            epsilon = 1f,
+            gravitationalConstant = gravitationalConstant
+        };
+        JobHandle gravityHandle = gravityJob.Schedule(nativeBodies.Length, 64, comHandle);
+
+        JobHandle lastHandle = gravityHandle;
+        if (bodyToBodyCollisions)
+        {
+            var collisionJob = new HandleCollisionsJob
+            {
+                bodies = nativeBodies,
+                nodes = quadTreeNodes.AsDeferredJobArray(),
+                collisionDamping = collisionDamping
+            };
+
+            int steps = Mathf.Max(1, subSteps);
+            for(int i = 0; i < steps; i++)
+            {
+                lastHandle = collisionJob.Schedule(lastHandle);
+            }
+        }
+
+        var integrateJob = new UpdatePositionsJob
+        {
+            bodies = nativeBodies,
+            accelerations = accelerations,
+            dt = Time.deltaTime / dtReduction,
+            bounds = bounds,
+            boundsDamping = boundsDamping,
+            maxVelocity = maxVelocity
+        };
+        JobHandle integrateHandle = integrateJob.Schedule(nativeBodies.Length, 64, lastHandle);
+
+        integrateHandle.Complete();
+
+        nativeBodies.CopyTo(bodies);
+    }
+
+
+
+
+
+
+
+
+
+
+
+
     void OnDrawGizmos() //gizmos visualization of the quadtree
     {
         if(!showGizmos) return;
 
         //draw the quadtree
-        for(int i = 0; i < quadTree.nodes.Count; i++)
+        for(int i = 0; i < quadTreeNodes.Length; i++)
         {
-            Node node = quadTree.nodes[i];
+            Node node = quadTreeNodes[i];
 
             Vector2 nodeCenter = new Vector2(node.quad.center.x, node.quad.center.y);
             Gizmos.DrawWireCube(nodeCenter, new Vector3(node.quad.size, node.quad.size, 1f));
