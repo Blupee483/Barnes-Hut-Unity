@@ -31,7 +31,7 @@ public class Sim2D : MonoBehaviour
     public float boundsDamping = 0.85f;
     [Header("Simulation Settings")]
     public bool bodyToBodyCollisions = true;
-    public bool showGizmos = false;
+    public bool showQuadTreeGizmos = false;
     public float gravitationalConstant = 1f;
     public float collisionDamping = 0.8f;
     [Header("Performance")]
@@ -40,6 +40,8 @@ public class Sim2D : MonoBehaviour
     public float maxVelocity = 25f;
     [Range(1, 10)] public int subSteps = 4;
     [Range(1, 10)] public int dtReduction = 2;
+
+    private bool isStart;
 
     void Awake()
     {
@@ -51,6 +53,8 @@ public class Sim2D : MonoBehaviour
         quadTreeNodes = new NativeList<Node>(4096, Allocator.Persistent);
         quadTreeParents = new NativeList<int>(1024, Allocator.Persistent);
         accelerations = new NativeArray<float2>((int)numBodies, Allocator.Persistent);
+
+        isStart = true;
     }
     void OnDestroy()
     {
@@ -62,6 +66,8 @@ public class Sim2D : MonoBehaviour
         quadTreeParents.Dispose();
         //if(accelerations.IsCreated) 
         accelerations.Dispose();
+
+        isStart = false;
     }
 
     public struct Quad
@@ -125,7 +131,7 @@ public class Sim2D : MonoBehaviour
             float2 pos = new float2(x, y);
 
             //add an orbital velocity relative to (0, 0) to each body
-            float2 orbitalVel = pos / math.length(pos);
+            float2 orbitalVel = pos / math.max(math.length(pos), 0.01f);
             orbitalVel = new float2(-orbitalVel.y, orbitalVel.x);
             float2 initVel = orbitalVel * initialSpeed;
 
@@ -295,7 +301,7 @@ public class Sim2D : MonoBehaviour
                 {
                     Node child = nodes[node.firstChild + j];
 
-                    if(child.mass <= 0) continue;
+                    if(child.mass <= 0 || math.any(math.isnan(child.centerOfMass))) continue; //guard against NaN
 
                     totalCoM += child.centerOfMass * child.mass;
                     totalMass += child.mass;
@@ -318,6 +324,7 @@ public class Sim2D : MonoBehaviour
         public float theta;
         public float epsilon;
         public float gravitationalConstant;
+        public float minDist;
 
         const int stackCapacity = 128;
 
@@ -355,6 +362,7 @@ public class Sim2D : MonoBehaviour
                     //prevent division by zero
                     if(denom == 0.0f) denom = float.MaxValue;
                     denom = Mathf.Min(denom, float.MaxValue);
+                    denom = math.max(denom, minDist);
 
                     acc += normal * (n.mass / denom) * gravitationalConstant;
                     continue;
@@ -370,14 +378,6 @@ public class Sim2D : MonoBehaviour
             stack.Dispose();
         }
     }
-
-
-
-
-
-
-
-
 
     //----------- \ update positions / --------------
 
@@ -401,7 +401,12 @@ public class Sim2D : MonoBehaviour
 
             float2 ClampMagnitude(float2 vec, float max) //clamps a vector to a length
             {
-                float2 normal = vec / math.length(vec);
+                if(math.any(math.isnan(vec)) || math.any(math.isinf(vec))) return float2.zero; //guard against nan/infinity
+
+                float lenSq = math.lengthsq(vec);
+                if(lenSq < 1e-12f) return float2.zero; //guard against 0/0 if vec == float2.zero
+
+                float2 normal = vec / math.sqrt(lenSq);
                 return normal * math.clamp(math.length(vec), 0, max);
             }
 
@@ -597,15 +602,6 @@ public class Sim2D : MonoBehaviour
 
 
 
-
-
-
-
-
-
-
-
-
     bool paused = false;
     //------------------- \ NEW UPDATE FUNCTION / ----------------------------
     void Update()
@@ -638,7 +634,8 @@ public class Sim2D : MonoBehaviour
             accelerations = accelerations,
             theta = accuracyTheta,
             epsilon = 1f,
-            gravitationalConstant = gravitationalConstant
+            gravitationalConstant = gravitationalConstant,
+            minDist = minDist
         };
         JobHandle gravityHandle = gravityJob.Schedule(nativeBodies.Length, 64, comHandle);
 
@@ -673,11 +670,44 @@ public class Sim2D : MonoBehaviour
         integrateHandle.Complete();
 
         nativeBodies.CopyTo(bodies);
+
+
+        //pauses the sim if there is a NaN or infinity
+        for(int i = 0; i < bodies.Length; i++)
+        {
+            if(math.any(math.isnan(bodies[i].position)) || math.any(math.isinf(bodies[i].position)))
+            {
+                Debug.LogError($"Body {i} is corrupted.");
+                paused = true;
+                break;
+            }
+        }
     }
 
-    void OnDrawGizmos() //gizmos visualization of the quadtree
+    void OnDrawGizmos()
     {
-        if(!showGizmos) return;
+        //Draw bounds
+        Gizmos.DrawWireCube(Vector3.zero, new Vector3(bounds.x, bounds.y));
+
+
+
+        if (!isStart) //draw particles in initial position
+        {
+            int bodiesPerRow = (int)Mathf.Sqrt(numBodies);
+            int bodiesPerColumn = (int)(numBodies-1)/bodiesPerRow+1;
+            float mySpacing = initialRadius*2f + spacing;
+
+            for(int i = 0; i < numBodies; i++)
+            {
+                float x = (i % bodiesPerRow - bodiesPerRow / 2f + 0.5f) * mySpacing;
+                float y = (i / bodiesPerRow - bodiesPerColumn / 2f + 0.5f) * mySpacing;
+
+                Gizmos.DrawWireSphere(new Vector3(x, y), initialRadius);
+            }
+        }
+
+
+        if(!showQuadTreeGizmos || !isStart) return;
 
         //draw the quadtree
         for(int i = 0; i < quadTreeNodes.Length; i++)

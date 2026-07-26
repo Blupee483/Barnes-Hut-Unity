@@ -302,22 +302,22 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   bodies: []
-  numBodies: 500
+  numBodies: 1500
   spacing: 1
   initialRadius: 0.3
   initialMass: 1
-  initialSpeed: 5
+  initialSpeed: 10
   bounds:
-    x: 200
-    y: 190
+    x: 250
+    y: 240
   boundsDamping: 0.85
   bodyToBodyCollisions: 1
-  showGizmos: 0
+  showQuadTreeGizmos: 0
   gravitationalConstant: 1
-  collisionDamping: 0.8
+  collisionDamping: 0.9
   minDist: 0.01
   accuracyTheta: 1
-  maxVelocity: 100
+  maxVelocity: 300
   subSteps: 4
   dtReduction: 1
 --- !u!4 &1990334940
