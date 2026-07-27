@@ -222,7 +222,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   mouseMoveDamping: 0.1
   minZoom: 2
-  maxZoom: 80
+  maxZoom: 140
   zoomSensitivity: 8
   zoomSmoothness: 10
 --- !u!1 &556646074
@@ -302,14 +302,14 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   bodies: []
-  numBodies: 1500
+  numBodies: 3000
   spacing: 1
   initialRadius: 0.3
   initialMass: 1
   initialSpeed: 10
   bounds:
-    x: 250
-    y: 240
+    x: 450
+    y: 440
   boundsDamping: 0.85
   bodyToBodyCollisions: 1
   showQuadTreeGizmos: 0

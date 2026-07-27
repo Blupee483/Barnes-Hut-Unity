@@ -693,7 +693,7 @@ public class Sim2D : MonoBehaviour
 
         if (!isStart) //draw particles in initial position
         {
-            int bodiesPerRow = (int)Mathf.Sqrt(numBodies);
+            int bodiesPerRow = (int)Mathf.Sqrt(Mathf.Max(numBodies, 1));
             int bodiesPerColumn = (int)(numBodies-1)/bodiesPerRow+1;
             float mySpacing = initialRadius*2f + spacing;
 
